@@ -90,6 +90,7 @@
 #include "qemu/option.h"
 #include "qemu/config-file.h"
 #include "qemu/qemu-options.h"
+#include "sysemu/save_dirty.h"
 #include "qemu/main-loop.h"
 #ifdef CONFIG_VIRTFS
 #include "fsdev/qemu-fsdev.h"
@@ -824,7 +825,10 @@ static MachineClass *find_default_machine(GSList *machines)
 static void version(void)
 {
     printf("QEMU emulator version " QEMU_FULL_VERSION "\n"
-           QEMU_COPYRIGHT "\n");
+           QEMU_COPYRIGHT "\n"
+           "Feature: dirty-save -- save guest-dirty pages to a file at pause, "
+           "reclaim their RSS with MADV_DONTNEED, restore on resume "
+           "(-dirty-save dir=PATH[,quota=N])\n");
 }
 
 static void help(int exitcode)
@@ -2728,6 +2732,8 @@ static void qemu_machine_creation_done(void)
     if (foreach_device_config(DEV_GDB, gdbserver_start) < 0) {
         exit(1);
     }
+
+    save_dirty_init(&error_fatal);
 }
 
 void qmp_x_exit_preconfig(Error **errp)
@@ -3656,6 +3662,9 @@ void qemu_init(int argc, char **argv, char **envp)
                 break;
             case QEMU_OPTION_nouserconfig:
                 /* Nothing to be parsed here. Especially, do not error out below. */
+                break;
+            case QEMU_OPTION_dirty_save:
+                save_dirty_parse_options(optarg, &error_fatal);
                 break;
             default:
                 if (os_parse_cmd_args(popt->index, optarg)) {

@@ -41,6 +41,7 @@
 #include "sysemu/replay.h"
 #include "sysemu/runstate.h"
 #include "sysemu/cpu-timers.h"
+#include "sysemu/save_dirty.h"
 #include "sysemu/whpx.h"
 #include "hw/boards.h"
 #include "hw/hw.h"
@@ -254,8 +255,9 @@ void cpu_interrupt(CPUState *cpu, int mask)
 static int do_vm_stop(RunState state, bool send_stop)
 {
     int ret = 0;
+    bool was_running = runstate_is_running();
 
-    if (runstate_is_running()) {
+    if (was_running) {
         runstate_set(state);
         cpu_disable_ticks();
         pause_all_vcpus();
@@ -268,6 +270,16 @@ static int do_vm_stop(RunState state, bool send_stop)
     bdrv_drain_all();
     ret = bdrv_flush_all();
     trace_vm_stop_flush_all(ret);
+
+    /* After the original pause logic has fully completed (vCPUs stopped, block
+     * layer drained/flushed), persist and drop the guest-dirty pages.  Only on
+     * a real running->paused transition: when the VM is already stopped, the
+     * existing snapshot may still be the only copy of the dropped pages, and
+     * the soft-dirty bits have since been re-armed so nothing would be
+     * re-saved anyway. */
+    if (was_running) {
+        save_dirty_pause(state);
+    }
 
     return ret;
 }
@@ -694,6 +706,10 @@ int vm_prepare_start(void)
 
 void vm_start(void)
 {
+    /* Before the original resume logic runs, restore the pages that were
+     * saved and dropped at the last pause. */
+    save_dirty_resume();
+
     if (!vm_prepare_start()) {
         resume_all_vcpus();
     }

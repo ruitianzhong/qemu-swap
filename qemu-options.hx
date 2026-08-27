@@ -4643,6 +4643,27 @@ ERST
 
 DEFHEADING()
 
+DEF("dirty-save", HAS_ARG, QEMU_OPTION_dirty_save,
+    "-dirty-save dir=PATH[,quota=B]\n"
+    "                save guest-dirty pages to a file in PATH at pause, drop\n"
+    "                them with MADV_DONTNEED, and restore them at resume\n"
+    "                (quota = max bytes of dirty pages to save; 0 = unlimited)\n",
+    QEMU_ARCH_ALL)
+SRST
+``-dirty-save dir=PATH[,quota=B]``
+    Enable saving of guest-dirty pages on VM pause.  The dirty pages are
+    detected through the kernel soft-dirty mechanism, written to a snapshot
+    file in the given directory, and dropped with ``madvise(MADV_DONTNEED)``
+    to reclaim host RSS.  On resume the pages are read back from the file and
+    written into guest memory.  ``quota`` limits how many bytes of dirty pages
+    are saved per pause (a memory-vs-speed tradeoff); dirty pages beyond the
+    quota are left resident and not dropped.  Requires kernel support for
+    soft-dirty tracking (``CONFIG_MEM_SOFT_DIRTY``) and permission to read
+    ``/proc/<pid>/pagemap`` and write ``/proc/<pid>/clear_refs``.
+ERST
+
+DEFHEADING()
+
 DEFHEADING(Generic object creation:)
 
 DEF("object", HAS_ARG, QEMU_OPTION_object,

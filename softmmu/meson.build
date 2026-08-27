@@ -9,6 +9,7 @@ specific_ss.add(when: 'CONFIG_SOFTMMU', if_true: [files(
   'ioport.c',
   'rtc.c',
   'runstate.c',
+  'save_dirty.c',
   'memory.c',
   'memory_mapping.c',
   'qtest.c',
