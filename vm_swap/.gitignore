@@ -1,0 +1,8 @@
+# Built helper binaries (sources are tracked; rebuild with make)
+agent/client_qemu
+agent/server_qemu
+dirtier/dirtier
+
+# Python bytecode
+__pycache__/
+*.pyc
