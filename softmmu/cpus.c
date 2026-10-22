@@ -252,7 +252,9 @@ void cpu_interrupt(CPUState *cpu, int mask)
     }
 }
 
-static int do_vm_stop(RunState state, bool send_stop)
+static int do_vm_stop(RunState state, bool send_stop,
+                      bool enable_save_dirty, bool has_quota,
+                      uint64_t quota)
 {
     int ret = 0;
     bool was_running = runstate_is_running();
@@ -278,7 +280,7 @@ static int do_vm_stop(RunState state, bool send_stop)
      * the soft-dirty bits have since been re-armed so nothing would be
      * re-saved anyway. */
     if (was_running) {
-        save_dirty_pause(state);
+        save_dirty_pause(state, enable_save_dirty, has_quota, quota);
     }
 
     return ret;
@@ -289,7 +291,7 @@ static int do_vm_stop(RunState state, bool send_stop)
  */
 int vm_shutdown(void)
 {
-    return do_vm_stop(RUN_STATE_SHUTDOWN, false);
+    return do_vm_stop(RUN_STATE_SHUTDOWN, false, false, false, 0);
 }
 
 bool cpu_can_run(CPUState *cpu)
@@ -654,9 +656,14 @@ void cpu_stop_current(void)
     }
 }
 
-int vm_stop(RunState state)
+int vm_stop_with_dirty(RunState state, bool enable_save_dirty,
+                       bool has_quota, uint64_t quota)
 {
     if (qemu_in_vcpu_thread()) {
+        /*
+         * This asynchronous path cannot carry per-call dirty-save options.
+         * QMP stop runs in the main loop, so it does not take this path.
+         */
         qemu_system_vmstop_request_prepare();
         qemu_system_vmstop_request(state);
         /*
@@ -667,7 +674,12 @@ int vm_stop(RunState state)
         return 0;
     }
 
-    return do_vm_stop(state, true);
+    return do_vm_stop(state, true, enable_save_dirty, has_quota, quota);
+}
+
+int vm_stop(RunState state)
+{
+    return vm_stop_with_dirty(state, false, false, 0);
 }
 
 /**

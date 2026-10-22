@@ -17,6 +17,7 @@
 #include "qemu-common.h"
 #include "qemu/cutils.h"
 #include "qemu/option.h"
+#include "qemu/error-report.h"
 #include "monitor/monitor.h"
 #include "sysemu/sysemu.h"
 #include "qemu/config-file.h"
@@ -26,6 +27,7 @@
 #include "ui/console.h"
 #include "sysemu/kvm.h"
 #include "sysemu/runstate.h"
+#include "sysemu/save_dirty.h"
 #include "sysemu/runstate-action.h"
 #include "sysemu/blockdev.h"
 #include "sysemu/block-backend.h"
@@ -80,8 +82,11 @@ void qmp_quit(Error **errp)
     qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_QMP_QUIT);
 }
 
-void qmp_stop(Error **errp)
+void qmp_stop(bool has_enable_save_dirty, bool enable_save_dirty,
+              bool has_quota, uint64_t quota, Error **errp)
 {
+    bool save_dirty = has_enable_save_dirty && enable_save_dirty;
+
     /* if there is a dump in background, we should wait until the dump
      * finished */
     if (dump_in_progress()) {
@@ -89,11 +94,25 @@ void qmp_stop(Error **errp)
         return;
     }
 
-    if (runstate_check(RUN_STATE_INMIGRATE)) {
-        autostart = 0;
-    } else {
-        vm_stop(RUN_STATE_PAUSED);
+    if (has_quota && !save_dirty) {
+        error_setg(errp, "quota requires enable-save-dirty=true");
+        return;
     }
+
+    if (runstate_check(RUN_STATE_INMIGRATE)) {
+        if (save_dirty) {
+            warn_report("save-dirty is ignored during incoming migration");
+        }
+        autostart = 0;
+        return;
+    }
+
+    if (save_dirty && !save_dirty_is_enabled()) {
+        error_setg(errp, "save-dirty is not enabled (-dirty-save)");
+        return;
+    }
+
+    vm_stop_with_dirty(RUN_STATE_PAUSED, save_dirty, has_quota, quota);
 }
 
 void qmp_system_reset(Error **errp)

@@ -36,6 +36,8 @@ static inline bool shutdown_caused_by_guest(ShutdownCause cause)
 void vm_start(void);
 int vm_prepare_start(void);
 int vm_stop(RunState state);
+int vm_stop_with_dirty(RunState state, bool enable_save_dirty,
+                       bool has_quota, uint64_t quota);
 int vm_stop_force_state(RunState state);
 int vm_shutdown(void);
 

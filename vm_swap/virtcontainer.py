@@ -264,13 +264,19 @@ class QEMU(Hypervisor):
 
         return []
 
-    def pause(self, qmp_client=None):
-        need_close = True
-        if qmp_client == None:
+    def pause(self, qmp_client=None, enable_save_dirty=False, quota=None):
+        need_close = False
+        if qmp_client is None:
             qmp_client = self.get_qmp_client()
-            need_close = False
-        qmp_client.execute("stop")
-        qmp_client.close()
+            need_close = True
+
+        args = {}
+        if enable_save_dirty:
+            args["enable-save-dirty"] = True
+            if quota:
+                args["quota"] = quota
+
+        qmp_client.execute("stop", arguments=args or None)
         if need_close:
             qmp_client.close()
         return []

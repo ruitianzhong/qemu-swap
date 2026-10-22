@@ -25,12 +25,16 @@
 - **触发点（hook 原则：pause 后置、resume 前置）**：
   - **pause（保存 + drop）**：挂在该 pause 周期原有逻辑全部完成之后 —— `do_vm_stop()`
     （`softmmu/cpus.c:254`）函数末尾，`bdrv_drain_all()/bdrv_flush_all()`（第 268-269 行）之后、
-    `return ret` 前。此时 vCPU 已停、块层已 flush，内存静止。仅当状态为 `RUN_STATE_PAUSED`
-    （`stop`/HMP `stop`）且功能开启时执行；`RESTORE_VM`（`loadvm`）等自动排除。
+    `return ret` 前。此时 vCPU 已停、块层已 flush，内存静止。仅当状态为
+    `RUN_STATE_PAUSED`、命令行已启用 `-dirty-save`，且本次 pause 通过 QMP `stop`
+    传入 `enable-save-dirty=true` 时执行；普通 pause（含 HMP `stop`、GUI 按钮）
+    不保存，`RESTORE_VM`（`loadvm`）等自动排除。
   - **resume（恢复）**：`vm_start()`（`softmmu/cpus.c:695`）函数最开头、`vm_prepare_start()` 之前
     load 脏页；恢复写回后内部再 `clear_refs`（避免写回动作把刚恢复的页当 dirty 留到下次 pause）。
 - **配额（quota）**：跨所有块累计"保存的 host 页字节数"，达 quota 即停止新增保存。超过配额的脏页
   不保存、不 drop（留驻内存），保证速度和内存的 tradeoff，且 resume 一定能完整写回。
+  默认值来自 `-dirty-save ...,quota=`；QMP `stop` 的 `quota` 仅覆盖本次 pause
+  （`0` 表示不限），不改变命令行默认值。
 
 ---
 
@@ -53,19 +57,22 @@
 
 ### 3.1 选项形态
 ```
--dirty-save dir=PATH[,quota=N]
+-dirty-save dir=PATH[,quota=N][,file=FILE]
 ```
 - `dir=PATH`：保存目录，也是使能开关（缺省则不使能）。
 - `quota=N`：脏页保存上限字节数，可带 `K/M/G`；缺省 0 = 不设限。
+- `file=FILE`：可选，指定快照文件路径（包含文件名）；父目录必须已存在，
+  否则初始化时报错。缺省为 `<dir>/dirty_snapshot.bin`。
 
-> 需求三项映射：出现 `-dirty-save`=使能、`dir=`=工作目录、`quota=`=配额。
+> 需求三项映射：出现 `-dirty-save`=使能、`dir=`=工作目录、`quota=`=配额；
+> `file=` 是额外的路径覆盖。
 
 ### 3.2 qemu-options.hx
 新增 `DEF("dirty-save", HAS_ARG, QEMU_OPTION_dirty_save, ...)` + `SRST/ERST` 文档。
 `QEMU_OPTION_*` 枚举由 meson 从 hx 自动生成，无需手改枚举。
 
 ### 3.3 vl.c 解析
-- `case QEMU_OPTION_dirty_save:` 用 `keyval_parse_into()` 解析 optarg，取出 `dir`/`quota`，
+- `case QEMU_OPTION_dirty_save:` 用 `keyval_parse_into()` 解析 optarg，取出 `dir`/`quota`/`file`，
   存入 `save_dirty` 全局配置（`save_dirty_parse_options()`）。
 - machine 初始化完成、VM 未启动（`qemu_machine_creation_done()` 附近）调 `save_dirty_init()`
   ：`mkdir -p workdir`、**探测 soft-dirty 支持**（不支持则 fatal）、打开 `/proc/self` 的

@@ -21,6 +21,7 @@
 
 static bool dirty_save_enabled;
 static char *dirty_save_dir;
+static char *dirty_save_file;       /* NULL = <dir>/dirty_snapshot.bin */
 static uint64_t dirty_save_quota;   /* 0 = unlimited */
 static int pagemap_fd = -1;
 static size_t host_page_size;
@@ -54,7 +55,7 @@ void save_dirty_parse_options(const char *optstr, Error **errp)
 {
     QDict *qdict = qdict_new();
     bool help = false;
-    const char *dir, *quota;
+    const char *dir, *file, *quota;
 
     if (!keyval_parse_into(qdict, optstr, NULL, &help, errp)) {
         error_setg(errp, "-dirty-save: invalid option specification");
@@ -67,15 +68,23 @@ void save_dirty_parse_options(const char *optstr, Error **errp)
     }
 
     dir = qdict_get_try_str(qdict, "dir");
+    file = qdict_get_try_str(qdict, "file");
     quota = qdict_get_try_str(qdict, "quota");
     if (!dir) {
         error_setg(errp, "-dirty-save requires dir=<path>");
         qobject_unref(qdict);
         return;
     }
+    if (file && !*file) {
+        error_setg(errp, "-dirty-save file: path must not be empty");
+        qobject_unref(qdict);
+        return;
+    }
 
     g_free(dirty_save_dir);
     dirty_save_dir = g_strdup(dir);
+    g_free(dirty_save_file);
+    dirty_save_file = file ? g_strdup(file) : NULL;
     dirty_save_enabled = true;
     dirty_save_quota = 0;
     if (quota) {
@@ -84,6 +93,16 @@ void save_dirty_parse_options(const char *optstr, Error **errp)
         }
     }
     qobject_unref(qdict);
+}
+
+/* Snapshot file path: the explicit file= path when given, otherwise
+ * <dir>/dirty_snapshot.bin.  Caller owns the returned string. */
+static char *dirty_save_path(void)
+{
+    if (dirty_save_file) {
+        return g_strdup(dirty_save_file);
+    }
+    return g_strdup_printf("%s/dirty_snapshot.bin", dirty_save_dir);
 }
 
 /* Write "4" to /proc/<pid>/clear_refs to clear all soft-dirty bits, i.e.
@@ -110,7 +129,8 @@ static int clear_soft_dirty(void)
 
 void save_dirty_init(Error **errp)
 {
-    char *pagemap_path, *stale;
+    char *pagemap_path, *snapshot_path, *snapshot_dir;
+    struct stat st;
     int ret;
 
     if (!dirty_save_enabled) {
@@ -123,19 +143,38 @@ void save_dirty_init(Error **errp)
         return;
     }
 
-    /* This process has not paused yet, so any snapshot left in the dir can
+    snapshot_path = dirty_save_path();
+    snapshot_dir = g_path_get_dirname(snapshot_path);
+    if (stat(snapshot_dir, &st) < 0) {
+        error_setg_errno(errp, errno,
+                         "-dirty-save: snapshot directory %s is not accessible",
+                         snapshot_dir);
+        goto out;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        error_setg(errp, "-dirty-save: %s is not a directory", snapshot_dir);
+        goto out;
+    }
+    if (stat(snapshot_path, &st) == 0 && S_ISDIR(st.st_mode)) {
+        error_setg(errp, "-dirty-save: snapshot path %s is a directory",
+                   snapshot_path);
+        goto out;
+    }
+
+    /* This process has not paused yet, so any snapshot left in the file can
      * only be from a previous QEMU process, whose pages do not correspond to
      * this VM's RAM (e.g. -incoming finishes straight into PAUSED, then
      * `cont` would restore foreign pages).  Remove it; failure is fatal
      * because the hazard would otherwise persist. */
-    stale = g_strdup_printf("%s/dirty_snapshot.bin", dirty_save_dir);
-    if (unlink(stale) < 0 && errno != ENOENT) {
+    if (unlink(snapshot_path) < 0 && errno != ENOENT) {
         error_setg_errno(errp, errno, "-dirty-save: cannot remove stale "
-                         "snapshot %s", stale);
-        g_free(stale);
-        return;
+                         "snapshot %s", snapshot_path);
+        goto out;
     }
-    g_free(stale);
+    g_free(snapshot_dir);
+    snapshot_dir = NULL;
+    g_free(snapshot_path);
+    snapshot_path = NULL;
 
     pagemap_path = g_strdup_printf("/proc/%d/pagemap", getpid());
     pagemap_fd = open(pagemap_path, O_RDONLY);
@@ -163,6 +202,10 @@ void save_dirty_init(Error **errp)
         }
         return;
     }
+
+out:
+    g_free(snapshot_dir);
+    g_free(snapshot_path);
 }
 
 /* Read one RAMBlock's soft-dirty bitmap from /proc/<pid>/pagemap.  One 8-byte
@@ -306,13 +349,20 @@ static void madvise_ranges(GArray *ranges)
     }
 }
 
-void save_dirty_pause(RunState state)
+bool save_dirty_is_enabled(void)
+{
+    return dirty_save_enabled && pagemap_fd >= 0;
+}
+
+void save_dirty_pause(RunState state, bool enable_save_dirty,
+                      bool has_quota, uint64_t quota)
 {
     RAMBlock *rb;
+    uint64_t effective_quota = has_quota ? quota : dirty_save_quota;
     SnapHeader h = {
         .magic = SNAP_MAGIC, .version = SNAP_VERSION,
         .block_count = 0, .pad = 0,
-        .quota = dirty_save_quota, .total_data = 0,
+        .quota = effective_quota, .total_data = 0,
     };
     GArray *ranges = NULL;
     uint64_t total_saved_pages = 0, total_skipped_pages = 0;
@@ -321,13 +371,14 @@ void save_dirty_pause(RunState state)
     char *path;
     int fd;
 
-    if (!dirty_save_enabled || state != RUN_STATE_PAUSED || pagemap_fd < 0) {
+    if (!dirty_save_enabled || !enable_save_dirty ||
+        state != RUN_STATE_PAUSED || pagemap_fd < 0) {
         return;
     }
 
     t0 = g_get_monotonic_time();
 
-    path = g_strdup_printf("%s/dirty_snapshot.bin", dirty_save_dir);
+    path = dirty_save_path();
     fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) {
         error_report("dirty-save: open %s: %s", path, strerror(errno));
@@ -378,7 +429,7 @@ void save_dirty_pause(RunState state)
                 continue;
             }
             dirty_seen++;
-            if (dirty_save_quota && h.total_data + ps > dirty_save_quota) {
+            if (effective_quota && h.total_data + ps > effective_quota) {
                 /* Over quota: leave pages resident, neither save nor drop. */
                 continue;
             }
@@ -488,7 +539,7 @@ void save_dirty_resume(void)
 
     t0 = g_get_monotonic_time();
 
-    path = g_strdup_printf("%s/dirty_snapshot.bin", dirty_save_dir);
+    path = dirty_save_path();
     fd = open(path, O_RDONLY);
     if (fd < 0) {
         /* No snapshot from a prior pause: nothing to restore. */

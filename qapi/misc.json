@@ -136,6 +136,10 @@
 #
 # Stop all guest VCPU execution.
 #
+# @enable-save-dirty: save dirty pages before stopping; requires -dirty-save
+#
+# @quota: per-pause quota override, e.g. "512M"; 0 = unlimited
+#
 # Since:  0.14
 #
 # Notes: This function will succeed even if the guest is already in the stopped
@@ -148,8 +152,14 @@
 # -> { "execute": "stop" }
 # <- { "return": {} }
 #
+# -> { "execute": "stop",
+#      "arguments": { "enable-save-dirty": true, "quota": "512M" } }
+# <- { "return": {} }
+#
 ##
-{ 'command': 'stop' }
+{ 'command': 'stop',
+  'data': { '*enable-save-dirty': 'bool',
+            '*quota': 'size' } }
 
 ##
 # @cont:

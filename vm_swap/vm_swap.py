@@ -106,9 +106,8 @@ class QEMUSwapChild(QEMUChild):
     def __init__(self, idx, output_dir, mgmt_name, guest_side_ip, host_side_ip, template,
                  dirty_save_enabled=False, dirty_save_dir=None, dirty_save_quota=None):
         super().__init__(idx, output_dir, mgmt_name, guest_side_ip, host_side_ip, template)
-        # dirty-save is on only when dirty_save_enabled is set.  If no dir is
-        # given, each VM uses its own work_dir() so different VMs don't clobber
-        # each other's snapshot file.
+        # dirty-save is on only when dirty_save_enabled is set.  All VMs share
+        # dirty_save_dir and use dirty_<idx>.bin so the files never collide.
         self.dirty_save_enabled = dirty_save_enabled
         self.dirty_save_dir = dirty_save_dir
         self.dirty_save_quota = dirty_save_quota
@@ -121,7 +120,14 @@ class QEMUSwapChild(QEMUChild):
         arg = f"-dirty-save dir={d}"
         if self.dirty_save_quota:
             arg += f",quota={self.dirty_save_quota}"
+        arg += f",file={os.path.join(d, f'dirty_{self.idx}.bin')}"
         return arg
+
+    def pause(self, qmp_client=None):
+        return super().pause(
+            qmp_client,
+            enable_save_dirty=self.dirty_save_enabled,
+            quota=self.dirty_save_quota)
 
     def create(self):
         # prepare rootfs
@@ -181,6 +187,14 @@ def format_mem(nbytes):
 def test_qemu_fork_ops(test_config: dict):
     mode = test_config["mode"]
     dirtier_bytes = test_config.get("dirtier_size", 512) * 1024 * 1024
+    output_dir = test_config["output_dir"]
+    dirty_save_dir = os.path.join(os.path.abspath(output_dir), "dirty_save")
+    if mode == "swap" and test_config.get("dirty_save_enabled"):
+        try:
+            os.makedirs(dirty_save_dir, exist_ok=True)
+        except OSError as e:
+            raise SystemExit(
+                f"cannot create dirty-save directory {dirty_save_dir}: {e}")
     if mode == "normal":
         template = QEMUTemplate(
             0, test_config["output_dir"], QEMU_DEFAULT_CONFIG)
@@ -217,16 +231,15 @@ def test_qemu_fork_ops(test_config: dict):
     tap_manager.init()
 
     childs = []
-    output_dir = test_config["output_dir"]
 
     parallel = test_config.get("parallel", False)
 
-    # dirty-save options for forked VMs (only in swap mode).  dir is left None
-    # so each VM falls back to its own work_dir().
+    # dirty-save options for forked VMs (only in swap mode).  All VMs share
+    # this directory and use dirty_<idx>.bin as the snapshot file.
     swap_kwargs = {}
     if mode == "swap" and test_config.get("dirty_save_enabled"):
         swap_kwargs = {"dirty_save_enabled": True,
-                       "dirty_save_dir": None,
+                       "dirty_save_dir": dirty_save_dir,
                        "dirty_save_quota": test_config.get("dirty_save_quota")}
 
     fork_start = time.monotonic()

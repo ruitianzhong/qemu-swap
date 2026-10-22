@@ -828,7 +828,7 @@ static void version(void)
            QEMU_COPYRIGHT "\n"
            "Feature: dirty-save -- save guest-dirty pages to a file at pause, "
            "reclaim their RSS with MADV_DONTNEED, restore on resume "
-           "(-dirty-save dir=PATH[,quota=N])\n");
+           "(-dirty-save dir=PATH[,quota=N][,file=FILE])\n");
 }
 
 static void help(int exitcode)

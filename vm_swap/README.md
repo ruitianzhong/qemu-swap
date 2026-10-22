@@ -13,9 +13,12 @@
    - 每个子 VM 有独立的 qcow2 覆盖层磁盘和独立管理 tap；
    - `-S -incoming defer` 启动后通过 QMP `migrate-incoming` 载入 `vm_state`，再 `cont`。
 4. `--mode swap --dirty-save` 时，每个子 VM 额外带
-   `-dirty-save dir=<workdir>[,quota=...]`：
-   pause 时把 guest 脏页写入 `dirty_snapshot.bin` 并 `MADV_DONTNEED` 释放 RSS，
-   resume 时从该文件恢复。
+   `-dirty-save dir=<common dir>[,quota=...],file=<per-VM file>`（只启用能力）；
+   pause 时 harness 还会通过 QMP 传 `enable-save-dirty=true`（以及可选的 quota），
+   QEMU 才会把 guest 脏页写入快照文件并 `MADV_DONTNEED` 释放 RSS；resume 时从该
+   文件恢复。所有子 VM 的快照文件位于同一目录
+   `<output_dir>/dirty_save/`，文件名固定为 `dirty_<idx>.bin`。QMP stop 不带
+   `enable-save-dirty=true` 时不会保存，也不会 drop。
 5. 依次做 `PAUSE_RESUME_ROUNDS`（默认 4）轮 pause/resume，每轮在 guest 内执行命令。
    每轮会在 pause 前、pause 后、resume 后各执行一次 `free -b`，打印宿主机 used
    内存及 `reclaimed` / `vs before pause` 差值（GiB 或 MiB）；所有轮次结束后
@@ -40,8 +43,12 @@
 
 ### 1.2 需求到实现的映射
 
-- 使能开关与工作目录：`-dirty-save dir=PATH`，出现该选项即启用。
+- 使能开关与工作目录：`-dirty-save dir=PATH`，出现该选项即启用能力。
 - 保存上限：`-dirty-save dir=PATH,quota=N`，`N` 支持 `K/M/G`；省略或 0 表示不限。
+- 快照文件：默认 `<dir>/dirty_snapshot.bin`；可用 `file=PATH` 覆盖（PATH 包含
+  文件名，父目录必须已存在）。
+- QMP 控制：`stop` 的 `enable-save-dirty=true` 才触发保存；`quota` 可覆盖本次 pause
+  的配额。详见 4.2。
 - 脏页检测：内核 soft-dirty（`/proc/<pid>/pagemap` + `/proc/<pid>/clear_refs`），
   粒度为 host page。
 - pause 保存/回收：`softmmu/cpus.c` 的 `do_vm_stop()` 调用
@@ -182,6 +189,31 @@ sudo python3 qemu-6.2.0/vm_swap/vm_swap.py --mode swap --dirty-save --dirtier
 `normal` 模式 pause 不回收内存，reclaimed 只有测量噪声；`swap + dirty-save`
 每次 pause 稳定回收约 2.2 GiB，对应 4 个子 VM × 512 MiB 的脏页。`free` 统计的是
 宿主机全局 used，包含其它进程，因此会有一定波动。
+
+### 4.2 QMP 触发方式
+
+`-dirty-save` 只启用能力；本次 pause 是否保存由 QMP `stop` 参数决定：
+
+```json
+// 普通 stop：不保存、不 drop
+{ "execute": "stop" }
+
+// 保存并回收，quota 使用命令行默认值
+{ "execute": "stop", "arguments": { "enable-save-dirty": true } }
+
+// 本次 pause 覆盖 quota；size 是字符串，支持 K/M/G，"0" 表示不限
+{ "execute": "stop",
+  "arguments": { "enable-save-dirty": true, "quota": "512M" } }
+```
+
+- `quota` 只影响本次 pause，不改变命令行默认值；不传时使用
+  `-dirty-save ...,quota=` 的值。
+- VM 已经是 paused 时再次 `stop` 不会保存。
+- `enable-save-dirty=true` 但命令行没有 `-dirty-save` 时，`stop` 返回错误。
+- 只传 `quota` 而不传 `enable-save-dirty=true` 时，`stop` 返回错误。
+- harness 在 swap 模式下会自动传入 `enable-save-dirty` 和 quota。
+- 快照文件固定为 `<output_dir>/dirty_save/dirty_<idx>.bin`，所有子 VM 共用
+  `dirty_save` 目录但文件名不同；`--dirty-save` 开启时 harness 会预先创建该目录。
 
 参数说明：
 

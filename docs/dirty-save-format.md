@@ -1,10 +1,14 @@
 # `dirty_snapshot.bin` 磁盘格式
 
 本文件描述 QEMU [`-dirty-save`](../qemu-options.hx) 特性在 VM pause 时生成的
-快照文件 `<workdir>/dirty_snapshot.bin` 的二进制布局。
+快照文件的二进制布局。默认路径为 `<dir>/dirty_snapshot.bin`；可通过
+`-dirty-save ...,file=PATH` 指定其它路径（PATH 必须包含文件名，且其父目录
+必须已存在）。
 
 - 生成：`softmmu/save_dirty.c` 的 `save_dirty_pause()`
 - 消费：`softmmu/save_dirty.c` 的 `save_dirty_resume()`
+- 触发：命令行 `-dirty-save` 启用能力，且本次 pause 通过 QMP `stop` 传入
+  `enable-save-dirty=true`；普通 pause 不生成快照
 - 生命周期：每次 pause 以 `O_TRUNC` 重新写入；resume 成功恢复后 `unlink` 删除。
 
 ## 1. 总览
@@ -33,7 +37,7 @@
 | `version` | u32 | 4 | 格式版本，当前 `1` |
 | `block_count` | u32 | 4 | 本文件中实际写入的块记录条数 |
 | `pad` | u32 | 4 | 对齐填充（固定为 0）|
-| `quota` | u64 | 8 | 本次 pause 用的配额上限（0 = 不限）|
+| `quota` | u64 | 8 | 本次 pause 实际使用的配额上限（0 = 不限；QMP `quota` 可覆盖 CLI 值）|
 | `total_data` | u64 | 8 | 所有块数据区的字节总数（诊断/完整性参考）|
 
 > 写入顺序：`save_dirty_pause` 先写一个占位头，写完全部块后 `lseek(0)` 重写，

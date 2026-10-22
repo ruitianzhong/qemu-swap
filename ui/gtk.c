@@ -1180,7 +1180,7 @@ static void gd_menu_pause(GtkMenuItem *item, void *opaque)
         return;
     }
     if (runstate_is_running()) {
-        qmp_stop(NULL);
+        qmp_stop(false, false, false, 0, NULL);
     } else {
         qmp_cont(NULL);
     }
