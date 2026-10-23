@@ -132,13 +132,34 @@
   'allow-preconfig': true }
 
 ##
+# @DirtySaveStats:
+#
+# Statistics from the save-dirty part of a pause.
+#
+# @saved-pages: number of dirty host pages actually written to the snapshot
+#
+# @saved-bytes: total bytes actually written to the snapshot
+#
+# @skipped-pages: dirty host pages left resident because of the quota
+#
+# @error: present when the save operation failed; human-readable reason
+#
+# Since: 6.2
+##
+{ 'struct': 'DirtySaveStats',
+  'data': { '*saved-pages': 'uint64',
+            '*saved-bytes': 'size',
+            '*skipped-pages': 'uint64',
+            '*error': 'str' } }
+
+##
 # @stop:
 #
 # Stop all guest VCPU execution.
 #
 # @enable-save-dirty: save dirty pages before stopping; requires -dirty-save
 #
-# @quota: per-pause quota override, e.g. "512M"; 0 = unlimited
+# @quota: per-pause quota override in bytes, e.g. 536870912; 0 = unlimited
 #
 # Since:  0.14
 #
@@ -147,19 +168,28 @@
 #        remains paused once migration finishes, as if the -S option was
 #        passed on the command line.
 #
+# Returns: when the save-dirty operation ran, statistics about it.  The
+#          object is empty when nothing was saved (a plain stop, an already
+#          paused guest, or incoming migration).  If the save failed, @error
+#          is set and the page counts cover only the data written before the
+#          failure.
+#
 # Example:
 #
 # -> { "execute": "stop" }
 # <- { "return": {} }
 #
 # -> { "execute": "stop",
-#      "arguments": { "enable-save-dirty": true, "quota": "512M" } }
-# <- { "return": {} }
+#      "arguments": { "enable-save-dirty": true, "quota": 536870912 } }
+# <- { "return": { "saved-pages": 131072,
+#                  "saved-bytes": 536870912,
+#                  "skipped-pages": 0 } }
 #
 ##
 { 'command': 'stop',
   'data': { '*enable-save-dirty': 'bool',
-            '*quota': 'size' } }
+            '*quota': 'size' },
+  'returns': 'DirtySaveStats' }
 
 ##
 # @cont:

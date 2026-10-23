@@ -894,7 +894,9 @@ void hmp_quit(Monitor *mon, const QDict *qdict)
 
 void hmp_stop(Monitor *mon, const QDict *qdict)
 {
-    qmp_stop(false, false, false, 0, NULL);
+    DirtySaveStats *ret = qmp_stop(false, false, false, 0, NULL);
+
+    qapi_free_DirtySaveStats(ret);
 }
 
 void hmp_sync_profile(Monitor *mon, const QDict *qdict)

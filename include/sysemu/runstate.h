@@ -3,6 +3,7 @@
 
 #include "qapi/qapi-types-run-state.h"
 #include "qemu/notify.h"
+#include "sysemu/save_dirty.h"
 
 bool runstate_check(RunState state);
 void runstate_set(RunState new_state);
@@ -37,7 +38,8 @@ void vm_start(void);
 int vm_prepare_start(void);
 int vm_stop(RunState state);
 int vm_stop_with_dirty(RunState state, bool enable_save_dirty,
-                       bool has_quota, uint64_t quota);
+                       bool has_quota, uint64_t quota,
+                       SaveDirtyPauseStats *stats);
 int vm_stop_force_state(RunState state);
 int vm_shutdown(void);
 

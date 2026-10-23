@@ -11,8 +11,11 @@
   included, and its parent directory must already exist). Saving still requires an
   explicit QMP `stop` with `enable-save-dirty=true`; a plain pause does not save or
   drop anything.
-- QMP `stop` may also pass `quota` (a size string such as `"512M"`) to override the
-  command-line quota for that pause only; `quota=0` means unlimited.
+- QMP `stop` may also pass `quota` (an integer byte count such as `536870912`)
+  to override the command-line quota for that pause only; `quota=0` means
+  unlimited. The command returns `DirtySaveStats` with `saved-pages`,
+  `saved-bytes`, `skipped-pages`, and an `error` string when the save failed;
+  the object is empty when no save ran.
 - Dirty pages are detected through the kernel soft-dirty mechanism
   (`/proc/<pid>/pagemap` + `/proc/<pid>/clear_refs`), so the granularity is the host page.
 - `vm_swap/` is a standalone fork/dirty-save test harness. It boots a template VM,

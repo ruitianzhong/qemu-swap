@@ -82,21 +82,23 @@ void qmp_quit(Error **errp)
     qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_QMP_QUIT);
 }
 
-void qmp_stop(bool has_enable_save_dirty, bool enable_save_dirty,
-              bool has_quota, uint64_t quota, Error **errp)
+DirtySaveStats *qmp_stop(bool has_enable_save_dirty, bool enable_save_dirty,
+                         bool has_quota, uint64_t quota, Error **errp)
 {
+    DirtySaveStats *ret;
+    SaveDirtyPauseStats stats = { 0 };
     bool save_dirty = has_enable_save_dirty && enable_save_dirty;
 
     /* if there is a dump in background, we should wait until the dump
      * finished */
     if (dump_in_progress()) {
         error_setg(errp, "There is a dump in process, please wait.");
-        return;
+        return NULL;
     }
 
     if (has_quota && !save_dirty) {
         error_setg(errp, "quota requires enable-save-dirty=true");
-        return;
+        return NULL;
     }
 
     if (runstate_check(RUN_STATE_INMIGRATE)) {
@@ -104,15 +106,33 @@ void qmp_stop(bool has_enable_save_dirty, bool enable_save_dirty,
             warn_report("save-dirty is ignored during incoming migration");
         }
         autostart = 0;
-        return;
+        return g_new0(DirtySaveStats, 1);
     }
 
     if (save_dirty && !save_dirty_is_enabled()) {
         error_setg(errp, "save-dirty is not enabled (-dirty-save)");
-        return;
+        return NULL;
     }
 
-    vm_stop_with_dirty(RUN_STATE_PAUSED, save_dirty, has_quota, quota);
+    vm_stop_with_dirty(RUN_STATE_PAUSED, save_dirty, has_quota, quota,
+                       &stats);
+
+    ret = g_new0(DirtySaveStats, 1);
+    if (stats.attempted) {
+        ret->has_saved_pages = true;
+        ret->saved_pages = stats.saved_pages;
+        ret->has_saved_bytes = true;
+        ret->saved_bytes = stats.saved_bytes;
+        ret->has_skipped_pages = true;
+        ret->skipped_pages = stats.skipped_pages;
+        if (stats.error) {
+            ret->has_error = true;
+            ret->error = stats.error;
+            stats.error = NULL;
+        }
+    }
+    g_free(stats.error);
+    return ret;
 }
 
 void qmp_system_reset(Error **errp)

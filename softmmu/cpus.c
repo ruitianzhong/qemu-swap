@@ -254,10 +254,14 @@ void cpu_interrupt(CPUState *cpu, int mask)
 
 static int do_vm_stop(RunState state, bool send_stop,
                       bool enable_save_dirty, bool has_quota,
-                      uint64_t quota)
+                      uint64_t quota, SaveDirtyPauseStats *stats)
 {
     int ret = 0;
     bool was_running = runstate_is_running();
+
+    if (stats) {
+        memset(stats, 0, sizeof(*stats));
+    }
 
     if (was_running) {
         runstate_set(state);
@@ -280,7 +284,7 @@ static int do_vm_stop(RunState state, bool send_stop,
      * the soft-dirty bits have since been re-armed so nothing would be
      * re-saved anyway. */
     if (was_running) {
-        save_dirty_pause(state, enable_save_dirty, has_quota, quota);
+        save_dirty_pause(state, enable_save_dirty, has_quota, quota, stats);
     }
 
     return ret;
@@ -291,7 +295,7 @@ static int do_vm_stop(RunState state, bool send_stop,
  */
 int vm_shutdown(void)
 {
-    return do_vm_stop(RUN_STATE_SHUTDOWN, false, false, false, 0);
+    return do_vm_stop(RUN_STATE_SHUTDOWN, false, false, false, 0, NULL);
 }
 
 bool cpu_can_run(CPUState *cpu)
@@ -657,7 +661,8 @@ void cpu_stop_current(void)
 }
 
 int vm_stop_with_dirty(RunState state, bool enable_save_dirty,
-                       bool has_quota, uint64_t quota)
+                       bool has_quota, uint64_t quota,
+                       SaveDirtyPauseStats *stats)
 {
     if (qemu_in_vcpu_thread()) {
         /*
@@ -674,12 +679,12 @@ int vm_stop_with_dirty(RunState state, bool enable_save_dirty,
         return 0;
     }
 
-    return do_vm_stop(state, true, enable_save_dirty, has_quota, quota);
+    return do_vm_stop(state, true, enable_save_dirty, has_quota, quota, stats);
 }
 
 int vm_stop(RunState state)
 {
-    return vm_stop_with_dirty(state, false, false, 0);
+    return vm_stop_with_dirty(state, false, false, 0, NULL);
 }
 
 /**

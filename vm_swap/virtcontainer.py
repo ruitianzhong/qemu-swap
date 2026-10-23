@@ -276,10 +276,10 @@ class QEMU(Hypervisor):
             if quota:
                 args["quota"] = quota
 
-        qmp_client.execute("stop", arguments=args or None)
+        res = qmp_client.execute("stop", arguments=args or None)
         if need_close:
             qmp_client.close()
-        return []
+        return res
 
     def copy_to_guest(self, host_path, guest_path):
         cmd = f"scp -i id_rsa {host_path} root@{self.mgmt_ip}:{guest_path}"

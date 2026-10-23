@@ -75,6 +75,23 @@ PAUSE_RESUME_ROUNDS = 4
 DEBUG = False
 
 
+def size_to_bytes(value):
+    """Convert a size string like '512M' to bytes for QMP.
+
+    QMP's QAPI 'size' type takes a JSON number, while the QEMU command line
+    accepts suffixes; the harness uses one user-facing value for both.
+    """
+    if value is None or isinstance(value, int):
+        return value
+    text = value.strip().lower()
+    units = {"k": 1 << 10, "m": 1 << 20, "g": 1 << 30, "t": 1 << 40}
+    mult = 1
+    if text and text[-1] in units:
+        mult = units[text[-1]]
+        text = text[:-1]
+    return int(text) * mult
+
+
 class QEMUSwapTemplate(QEMUTemplate):
     def __init__(self, idx, output_dir, config_dict, file_back_mem=True):
         super().__init__(idx, output_dir, config_dict, file_back_mem)
@@ -127,7 +144,7 @@ class QEMUSwapChild(QEMUChild):
         return super().pause(
             qmp_client,
             enable_save_dirty=self.dirty_save_enabled,
-            quota=self.dirty_save_quota)
+            quota=size_to_bytes(self.dirty_save_quota))
 
     def create(self):
         # prepare rootfs
@@ -320,9 +337,26 @@ def test_qemu_fork_ops(test_config: dict):
         # only sent after do_vm_stop() (including save_dirty_pause) / vm_start()
         # (including save_dirty_resume) have fully completed, so when these
         # calls return the pause/save or resume/restore is already done.
+        round_saved_pages = 0
+        round_saved_bytes = 0
         for child in childs:
             print(f"pause {child.id()}")
-            child.pause()
+            stats = child.pause() or {}
+            if stats:
+                saved_pages = stats.get("saved-pages", 0)
+                saved_bytes = stats.get("saved-bytes", 0)
+                skipped_pages = stats.get("skipped-pages", 0)
+                round_saved_pages += saved_pages
+                round_saved_bytes += saved_bytes
+                line = (f"  save-dirty: saved {saved_pages} pages "
+                        f"({format_mem(saved_bytes)}), "
+                        f"skipped {skipped_pages} pages")
+                if stats.get("error"):
+                    line += f", ERROR: {stats['error']}"
+                print(line)
+        if round_saved_pages or round_saved_bytes:
+            print(f"  save-dirty round total: {round_saved_pages} pages "
+                  f"({format_mem(round_saved_bytes)})")
         paused = read_host_memory()
         if paused is None:
             print("host memory after pause: free failed")

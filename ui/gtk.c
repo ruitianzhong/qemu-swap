@@ -1180,7 +1180,9 @@ static void gd_menu_pause(GtkMenuItem *item, void *opaque)
         return;
     }
     if (runstate_is_running()) {
-        qmp_stop(false, false, false, 0, NULL);
+        DirtySaveStats *ret = qmp_stop(false, false, false, 0, NULL);
+
+        qapi_free_DirtySaveStats(ret);
     } else {
         qmp_cont(NULL);
     }

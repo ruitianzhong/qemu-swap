@@ -183,35 +183,63 @@ sudo python3 qemu-6.2.0/vm_swap/vm_swap.py --mode swap --dirty-save --dirtier
 
 | 模式 | avg used before pause | avg used while paused | avg reclaimed on pause | avg delta after resume |
 |---|---|---|---|---|
-| `--mode normal --dirtier` | 26.80 GiB | 26.80 GiB | **-0.9 MiB** | 1.1 MiB |
-| `--mode swap --dirty-save --dirtier` | 27.04 GiB | 24.81 GiB | **2.24 GiB** | 175.8 MiB |
+| `--mode normal --dirtier` | 15.43 GiB | 15.44 GiB | **-1.2 MiB** | 1.2 MiB |
+| `--mode swap --dirty-save --dirtier` | 15.51 GiB | 13.30 GiB | **2.21 GiB** | 28.3 MiB |
 
 `normal` 模式 pause 不回收内存，reclaimed 只有测量噪声；`swap + dirty-save`
-每次 pause 稳定回收约 2.2 GiB，对应 4 个子 VM × 512 MiB 的脏页。`free` 统计的是
-宿主机全局 used，包含其它进程，因此会有一定波动。
+每次 pause 稳定回收约 2.2 GiB，对应 4 个子 VM 的脏页。每个子 VM 的 QMP 返回值
+约为 14.5 万页（约 580 MiB，包含 `dirtier` 的 512 MiB 和 guest 自身活动），
+与 `qemu_<idx>.log` 里的 `dirty-save: pause ... saved=` 完全一致；每轮合计约
+2.27 GiB。`free` 统计的是宿主机全局 used，包含其它进程，因此会有一定波动。
 
 ### 4.2 QMP 触发方式
 
 `-dirty-save` 只启用能力；本次 pause 是否保存由 QMP `stop` 参数决定：
 
 ```json
-// 普通 stop：不保存、不 drop
+// 普通 stop：不保存、不 drop，返回空对象
 { "execute": "stop" }
 
 // 保存并回收，quota 使用命令行默认值
 { "execute": "stop", "arguments": { "enable-save-dirty": true } }
 
-// 本次 pause 覆盖 quota；size 是字符串，支持 K/M/G，"0" 表示不限
+// 本次 pause 覆盖 quota；QMP 的 size 是 JSON 数字（字节），0 表示不限
 { "execute": "stop",
-  "arguments": { "enable-save-dirty": true, "quota": "512M" } }
+  "arguments": { "enable-save-dirty": true, "quota": 536870912 } }
 ```
 
+`stop` 的返回值直接给出本次 save-dirty 的结果：
+
+- 未执行 save（普通 stop、VM 已 paused、`INMIGRATE`）→ `{"return": {}}`；
+- 执行成功 →
+  `{"return": {"saved-pages": 131072, "saved-bytes": 536870912, "skipped-pages": 0}}`；
+- 执行失败（open/write/fsync 等）→ 返回失败前已写入的计数（可能为 0），并带
+  `"error"` 说明原因，例如：
+  ```json
+  {"return": {"saved-pages": 0, "saved-bytes": 0, "skipped-pages": 0,
+              "error": "open /path/dirty_1.bin: No such file or directory"}}
+  ```
+  失败时不会执行 `MADV_DONTNEED`，页面仍驻留内存。
+
+字段含义：
+
+| 字段 | 含义 |
+|---|---|
+| `saved-pages` | 实际写入快照的 host 页数 |
+| `saved-bytes` | 实际写入的字节数（通常为 `saved-pages × host page size`） |
+| `skipped-pages` | 因 quota 超限而未保存、未 drop 的脏页数 |
+| `error` | 仅失败时出现，表示保存失败的原因 |
+
+其它约定：
+
 - `quota` 只影响本次 pause，不改变命令行默认值；不传时使用
-  `-dirty-save ...,quota=` 的值。
-- VM 已经是 paused 时再次 `stop` 不会保存。
+  `-dirty-save ...,quota=` 的值。注意 QMP 的数字是字节数，命令行才支持
+  `512M` 这类后缀；harness 会自动转换。
+- VM 已经是 paused 时再次 `stop` 不会保存，返回空对象。
 - `enable-save-dirty=true` 但命令行没有 `-dirty-save` 时，`stop` 返回错误。
 - 只传 `quota` 而不传 `enable-save-dirty=true` 时，`stop` 返回错误。
-- harness 在 swap 模式下会自动传入 `enable-save-dirty` 和 quota。
+- harness 在 swap 模式下会自动传入 `enable-save-dirty` 和 quota，并打印每个子
+  VM 的返回统计；保存失败时打印 `ERROR: ...`。
 - 快照文件固定为 `<output_dir>/dirty_save/dirty_<idx>.bin`，所有子 VM 共用
   `dirty_save` 目录但文件名不同；`--dirty-save` 开启时 harness 会预先创建该目录。
 
@@ -245,7 +273,9 @@ sudo python3 qemu-6.2.0/vm_swap/vm_swap.py --mode swap --dirty-save --dirtier
 === round 1/4 ===
 host memory before pause: 24.81 GiB used / 251.51 GiB total
 pause 1
+  save-dirty: saved 131072 pages (512.0 MiB), skipped 0 pages
 ...
+  save-dirty round total: 524288 pages (2.00 GiB)
 host memory after pause: 20.63 GiB used (reclaimed 4.18 GiB)
 resume 1
 ...
@@ -276,7 +306,7 @@ pause 前的净变化。
 
 工作目录中的其它文件：
 
-- `qemu_<idx>/dirty_snapshot.bin`：dirty-save 在 pause 时写入，resume 成功后删除；
+- `dirty_save/dirty_<idx>.bin`：dirty-save 在 pause 时写入，resume 成功后删除；
 - `qemu_0/vm_state`、`qemu_0/vm_mem`：模板快照状态和共享内存文件；
 - `qemu_<idx>/qemu_<idx>.qcow2`：子 VM 的 qcow2 覆盖层。
 

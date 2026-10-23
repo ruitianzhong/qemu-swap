@@ -328,6 +328,23 @@ static bool read_all(int fd, void *buf, size_t len)
     return true;
 }
 
+/* Record the first failure of a save-dirty pause.  stats may be NULL. */
+static void stats_set_error(SaveDirtyPauseStats *stats,
+                            const char *fmt, ...) G_GNUC_PRINTF(2, 3);
+
+static void stats_set_error(SaveDirtyPauseStats *stats,
+                            const char *fmt, ...)
+{
+    va_list ap;
+
+    if (!stats || stats->error) {
+        return;
+    }
+    va_start(ap, fmt);
+    stats->error = g_strdup_vprintf(fmt, ap);
+    va_end(ap);
+}
+
 static void madvise_ranges(GArray *ranges)
 {
     for (guint j = 0; j < ranges->len; j++) {
@@ -355,7 +372,8 @@ bool save_dirty_is_enabled(void)
 }
 
 void save_dirty_pause(RunState state, bool enable_save_dirty,
-                      bool has_quota, uint64_t quota)
+                      bool has_quota, uint64_t quota,
+                      SaveDirtyPauseStats *stats)
 {
     RAMBlock *rb;
     uint64_t effective_quota = has_quota ? quota : dirty_save_quota;
@@ -366,14 +384,23 @@ void save_dirty_pause(RunState state, bool enable_save_dirty,
     };
     GArray *ranges = NULL;
     uint64_t total_saved_pages = 0, total_skipped_pages = 0;
+    uint64_t written_pages = 0, written_bytes = 0;
     unsigned int blocks_saved = 0;
     gint64 t0;
     char *path;
     int fd;
 
+    if (stats) {
+        memset(stats, 0, sizeof(*stats));
+    }
+
     if (!dirty_save_enabled || !enable_save_dirty ||
         state != RUN_STATE_PAUSED || pagemap_fd < 0) {
         return;
+    }
+
+    if (stats) {
+        stats->attempted = true;
     }
 
     t0 = g_get_monotonic_time();
@@ -381,11 +408,17 @@ void save_dirty_pause(RunState state, bool enable_save_dirty,
     path = dirty_save_path();
     fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) {
-        error_report("dirty-save: open %s: %s", path, strerror(errno));
+        int err = errno;
+
+        error_report("dirty-save: open %s: %s", path, strerror(err));
+        stats_set_error(stats, "open %s: %s", path, strerror(err));
         g_free(path);
         return;
     }
     if (!write_all(fd, &h, sizeof(h))) {
+        int err = errno;
+
+        stats_set_error(stats, "write %s: %s", path, strerror(err));
         goto out;
     }
 
@@ -418,6 +451,8 @@ void save_dirty_pause(RunState state, bool enable_save_dirty,
 
         buf = block_pagemap(rb);
         if (!buf) {
+            stats_set_error(stats, "cannot read pagemap for block %s",
+                            rb->idstr);
             continue;
         }
         map_bytes = (slots + 7) / 8;
@@ -467,6 +502,9 @@ void save_dirty_pause(RunState state, bool enable_save_dirty,
             !write_all(fd, &psz, 8) ||
             !write_all(fd, &nsave, 8) ||
             !write_all(fd, slot_map, map_bytes)) {
+            int err = errno;
+
+            stats_set_error(stats, "write %s: %s", path, strerror(err));
             g_free(buf);
             g_free(slot_map);
             g_array_unref(idx);
@@ -476,11 +514,16 @@ void save_dirty_pause(RunState state, bool enable_save_dirty,
         for (k = 0; k < nsave; k++) {
             uint64_t slot = g_array_index(idx, uint64_t, k);
             if (!write_all(fd, rb->host + slot * ps, ps)) {
+                int err = errno;
+
+                stats_set_error(stats, "write %s: %s", path, strerror(err));
                 g_free(buf);
                 g_free(slot_map);
                 g_array_unref(idx);
                 goto out;
             }
+            written_pages++;
+            written_bytes += ps;
             RamDirtyRange one = { .start = rb->host + slot * ps, .len = ps };
             g_array_append_val(ranges, one);
         }
@@ -494,24 +537,49 @@ void save_dirty_pause(RunState state, bool enable_save_dirty,
 
     /* The snapshot is complete on disk; now the pages may be dropped. */
     if (fsync(fd) < 0) {
-        error_report("dirty-save: fsync: %s", strerror(errno));
+        int err = errno;
+
+        error_report("dirty-save: fsync: %s", strerror(err));
+        stats_set_error(stats, "fsync %s: %s", path, strerror(err));
     }
     madvise_ranges(ranges);
 
-    (void)lseek(fd, 0, SEEK_SET);
-    ssize_t rew = write(fd, &h, sizeof(h));
-    (void)rew;
+    if (lseek(fd, 0, SEEK_SET) < 0) {
+        int err = errno;
+
+        error_report("dirty-save: seek: %s", strerror(err));
+        stats_set_error(stats, "seek %s: %s", path, strerror(err));
+    } else {
+        ssize_t rew = write(fd, &h, sizeof(h));
+
+        if (rew != sizeof(h)) {
+            int err = rew < 0 ? errno : EIO;
+
+            error_report("dirty-save: write header: %s", strerror(err));
+            stats_set_error(stats, "write header %s: %s", path,
+                            strerror(err));
+        }
+    }
 
     /* Make the (header) data durable, then drop the file's page cache so the
      * snapshot does not keep resident memory that we are trying to reclaim. */
     if (fsync(fd) < 0) {
-        error_report("dirty-save: fsync(header): %s", strerror(errno));
+        int err = errno;
+
+        error_report("dirty-save: fsync(header): %s", strerror(err));
+        stats_set_error(stats, "fsync %s: %s", path, strerror(err));
     }
     if (posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED) < 0) {
         error_report("dirty-save: fadvise DONTNEED: %s", strerror(errno));
     }
 
 out:
+    if (stats && stats->attempted) {
+        stats->saved_pages = written_pages;
+        stats->saved_bytes = written_bytes;
+        stats->skipped_pages = total_skipped_pages;
+    }
+
     close(fd);
     g_free(path);
     if (ranges) {
