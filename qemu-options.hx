@@ -4644,13 +4644,15 @@ ERST
 DEFHEADING()
 
 DEF("dirty-save", HAS_ARG, QEMU_OPTION_dirty_save,
-    "-dirty-save dir=PATH[,quota=B][,file=FILE]\n"
+    "-dirty-save dir=PATH[,quota=B][,file=FILE][,direct=auto|on|off][,batch=SIZE]\n"
     "                enable dirty-page save/drop; triggered by QMP stop with\n"
     "                enable-save-dirty=true (quota = max bytes per pause;\n"
-    "                0 = unlimited; FILE defaults to PATH/dirty_snapshot.bin)\n",
+    "                0 = unlimited; FILE defaults to PATH/dirty_snapshot.bin;\n"
+    "                direct=auto probes O_DIRECT and falls back to buffered;\n"
+    "                batch = max bytes per writev, default 4M)\n",
     QEMU_ARCH_ALL)
 SRST
-``-dirty-save dir=PATH[,quota=B][,file=FILE]``
+``-dirty-save dir=PATH[,quota=B][,file=FILE][,direct=auto|on|off][,batch=SIZE]``
     Enable the guest-dirty page save/reclaim capability.  Saving only happens
     when the VM is paused through QMP ``stop`` with ``enable-save-dirty=true``;
     a pause without that argument (including HMP ``stop``) does not save or
@@ -4663,8 +4665,12 @@ SRST
     and not dropped.  QMP ``stop`` may override it for one pause with its
     ``quota`` argument.  ``file`` overrides the snapshot path, including the
     file name; its parent directory must already exist.  The default is
-    ``PATH/dirty_snapshot.bin``.  Requires kernel support for soft-dirty
-    tracking (``CONFIG_MEM_SOFT_DIRTY``) and permission to read
+    ``PATH/dirty_snapshot.bin``.  ``direct`` controls O_DIRECT use: ``auto``
+    probes the snapshot directory and falls back to buffered I/O with a log
+    line if unsupported, ``on`` requires O_DIRECT, and ``off`` forces buffered
+    I/O.  ``batch`` sets the maximum bytes per batched write (default 4 MiB).
+    Requires kernel support for soft-dirty tracking
+    (``CONFIG_MEM_SOFT_DIRTY``) and permission to read
     ``/proc/<pid>/pagemap`` and write ``/proc/<pid>/clear_refs``.
 ERST
 

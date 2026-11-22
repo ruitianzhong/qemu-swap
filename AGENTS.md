@@ -5,12 +5,16 @@
 - This repository is a QEMU 6.2.0 source tree with a custom **vm-swap** feature.
 - vm-swap saves guest-dirty host pages when a VM is paused, reclaims their RSS with
   `MADV_DONTNEED`, and restores them when the VM resumes.
-- The capability is enabled with `-dirty-save dir=PATH[,quota=N][,file=FILE]`; `dir`
-  is both the working directory and the enable switch. The snapshot file defaults to
-  `PATH/dirty_snapshot.bin` and can be overridden with `file=FILE` (the file name is
-  included, and its parent directory must already exist). Saving still requires an
-  explicit QMP `stop` with `enable-save-dirty=true`; a plain pause does not save or
-  drop anything.
+- The capability is enabled with
+  `-dirty-save dir=PATH[,quota=N][,file=FILE][,direct=auto|on|off][,batch=SIZE]`;
+  `dir` is both the working directory and the enable switch. The snapshot file
+  defaults to `PATH/dirty_snapshot.bin` and can be overridden with `file=FILE`
+  (the file name is included, and its parent directory must already exist).
+  Saving still requires an explicit QMP `stop` with `enable-save-dirty=true`;
+  a plain pause does not save or drop anything. `direct=auto` probes the
+  snapshot directory for O_DIRECT and falls back to buffered I/O with one log
+  line when unsupported; `batch` caps the bytes per batched write (default
+  4 MiB).
 - QMP `stop` may also pass `quota` (an integer byte count such as `536870912`)
   to override the command-line quota for that pause only; `quota=0` means
   unlimited. The command returns `DirtySaveStats` with `saved-pages`,
